@@ -2,47 +2,74 @@ import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
 import twilio from "twilio";
-import fs from "fs";
+import { Pool } from "pg";
 
 // In-memory cache for storing OTPs during a session
 // Key: phone number, Value: { code: string, expires: number }
 const otpCache = new Map<string, { code: string; expires: number }>();
 
-const DATA_FILE = path.join(process.cwd(), "data_store.json");
+// --- POSTGRES SETUP ---
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.DATABASE_URL?.includes("render.com")
+    ? { rejectUnauthorized: false }
+    : undefined,
+});
 
-function readDataStore() {
+async function ensureTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_data (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT now()
+    )
+  `);
+}
+
+async function readDataStore(): Promise<any> {
   try {
-    if (fs.existsSync(DATA_FILE)) {
-      const data = fs.readFileSync(DATA_FILE, "utf-8");
-      return JSON.parse(data);
+    const result = await pool.query(`SELECT key, value FROM app_data`);
+    const data: any = {};
+    for (const row of result.rows) {
+      data[row.key] = row.value;
     }
+    return data;
   } catch (err) {
-    console.error("Error reading data store file:", err);
+    console.error("Error reading data store from Postgres:", err);
   }
   return {};
 }
 
-function writeDataStore(data: any) {
+async function writeDataStore(data: any) {
   try {
-    const current = readDataStore();
-    const updated = { ...current, ...data };
-    fs.writeFileSync(DATA_FILE, JSON.stringify(updated, null, 2), "utf-8");
+    const entries = Object.entries(data);
+    for (const [key, value] of entries) {
+      await pool.query(
+        `INSERT INTO app_data (key, value, updated_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (key)
+         DO UPDATE SET value = $2, updated_at = now()`,
+        [key, JSON.stringify(value)]
+      );
+    }
   } catch (err) {
-    console.error("Error writing data store file:", err);
+    console.error("Error writing data store to Postgres:", err);
   }
 }
 
 async function startServer() {
+  await ensureTable();
+
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
   // Middleware
   app.use(express.json({ limit: "50mb" })); // Support large inventories
 
   // API Route: Get all shared cloud data (Shops, Inventory, Orders)
-  app.get("/api/data", (req, res) => {
+  app.get("/api/data", async (req, res) => {
     try {
-      const data = readDataStore();
+      const data = await readDataStore();
       res.json({
         shops: data.shops || null,
         inventory: data.inventory || null,
@@ -54,11 +81,11 @@ async function startServer() {
   });
 
   // API Route: Sync shops
-  app.post("/api/data/shops", (req, res) => {
+  app.post("/api/data/shops", async (req, res) => {
     try {
       const { shops } = req.body;
       if (Array.isArray(shops)) {
-        writeDataStore({ shops });
+        await writeDataStore({ shops });
         return res.json({ success: true, message: "Shops synced successfully!" });
       }
       res.status(400).json({ error: "Invalid shops array" });
@@ -68,11 +95,11 @@ async function startServer() {
   });
 
   // API Route: Sync inventory
-  app.post("/api/data/inventory", (req, res) => {
+  app.post("/api/data/inventory", async (req, res) => {
     try {
       const { inventory } = req.body;
       if (Array.isArray(inventory)) {
-        writeDataStore({ inventory });
+        await writeDataStore({ inventory });
         return res.json({ success: true, message: "Inventory synced successfully!" });
       }
       res.status(400).json({ error: "Invalid inventory array" });
@@ -82,11 +109,11 @@ async function startServer() {
   });
 
   // API Route: Sync orders
-  app.post("/api/data/orders", (req, res) => {
+  app.post("/api/data/orders", async (req, res) => {
     try {
       const { orders } = req.body;
       if (Array.isArray(orders)) {
-        writeDataStore({ orders });
+        await writeDataStore({ orders });
         return res.json({ success: true, message: "Orders synced successfully!" });
       }
       res.status(400).json({ error: "Invalid orders array" });
