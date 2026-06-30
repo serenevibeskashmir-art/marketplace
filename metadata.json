@@ -1,0 +1,6 @@
+{
+  "name": "LocalMart",
+  "description": "A localized neighborhood marketplace for buying fresh groceries, medicines, bakery items, garments, books, and electronics from nearby local stores, featuring secure verification, custom distance calculations, standard and express delivery options, and an easy Excel upload tool for merchants.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
